@@ -6,6 +6,10 @@
 <meta name="theme-color" content="#0f1419">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Aktien">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>Aktien-Assistent</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
@@ -81,6 +85,26 @@ function toast(msg) {
   t.textContent = msg; t.style.display = "block";
   clearTimeout(toast.t); toast.t = setTimeout(() => (t.style.display = "none"), 3500);
 }
+const WHY = {
+  "ueber 200-Tage-Linie": "Kurs liegt über dem Durchschnitt der letzten 200 Tage",
+  "50 > 200": "kurzfristiger Trend ist stärker als der langfristige",
+  "12M-Momentum positiv": "in 12 Monaten im Plus",
+  "RSI neutral/gesund": "weder überkauft noch überverkauft",
+  "RSI ueberhitzt": "kurzfristig stark gestiegen (überhitzt)",
+  ">25% unter 52W-Hoch": "mehr als 25 % unter dem Jahreshoch",
+};
+const plainWhy = (w) => (w || "").split(", ").map((t) => WHY[t] || t).filter(Boolean).join(" · ");
+const FEE = { pct: 0.25, min: 1 };
+// Gebuehr fuer Kauf und Verkauf zusammen in Prozent des Einsatzes
+const feeRound = (eurAmount) => eurAmount > 0 ? (2 * Math.max(eurAmount * FEE.pct / 100, FEE.min)) / eurAmount : null;
+async function loadFx() {
+  const { data } = await sb.from("fx").select("cur,eur_per_unit");
+  const m = new Map((data || []).map((r) => [r.cur, Number(r.eur_per_unit)]));
+  m.set("EUR", 1);
+  return m;
+}
+const CUR_SIGN = { EUR: "€", USD: "$", GBP: "£", GBp: "p", CHF: "CHF" };
+const curSign = (c) => CUR_SIGN[c] || c || "";
 const badgeClass = (s) => s === "Kandidat" ? "b-k" : s === "meiden" ? "b-m" : "b-b";
 
 // ---------- Login ----------
@@ -115,6 +139,10 @@ async function loadSignals() {
   for (const r of data) if (!latest.has(r.symbol)) latest.set(r.symbol, r);
   return latest;
 }
+async function loadFees() {
+  const { data } = await sb.from("settings").select("fee_pct,fee_min_eur").eq("id", 1).single();
+  if (data) { FEE.pct = Number(data.fee_pct); FEE.min = Number(data.fee_min_eur); }
+}
 async function loadNames() {
   const { data } = await sb.from("watchlist").select("symbol,name,active");
   return new Map((data || []).map((w) => [w.symbol, w.name || w.symbol]));
@@ -122,7 +150,7 @@ async function loadNames() {
 
 // ---------- Tabs ----------
 async function tabSignale() {
-  const [sig, names] = await Promise.all([loadSignals(), loadNames()]);
+  const [sig, names] = await Promise.all([loadSignals(), loadNames(), loadFees()]);
   const all = [...sig.values()];
   const count = (k) => all.filter((r) => r.signal === k).length;
   const sorters = {
@@ -170,8 +198,9 @@ async function tabSignale() {
           h("button", { class: "chip" + (!!state.mut === v ? " on" : ""), onclick: () => { state.mut = v; render(); } }, t)))),
       h("p", { class: "mut", style: "margin:4px 0 8px" }, "Höchster Score, bei Gleichstand " + (state.mut ? "die Aktie mit dem stärksten 12-Monats-Anstieg" : "die ruhigere Aktie") + ". Nur Einzelaktien, ohne ETFs und ohne bereits gehaltene Werte."),
       ...top.map((r, i) => h("div", { class: "row", style: "cursor:pointer;padding:6px 0;border-top:1px solid var(--line, #2a2f3a)", onclick: () => openChart(r.symbol, names.get(r.symbol) || r.symbol, r.stop_price) },
-        h("div", {}, h("b", {}, (i + 1) + ". " + (names.get(r.symbol) || r.symbol)), " ", h("span", { class: "mut" }, "Score " + r.score + " · Schwankung " + fmt(r.vola * 100, 0) + " %")),
-        h("span", {}, "ca. " + fmt(r.size_eur) + " €")))) : null,
+        h("div", {}, h("b", {}, (i + 1) + ". " + (names.get(r.symbol) || r.symbol)), " ", h("span", { class: "mut" }, "Score " + r.score + " · Schwankung " + fmt(r.vola * 100, 0) + " %"),
+          h("div", { class: "mut" }, plainWhy(r.why))),
+        h("div", { style: "text-align:right" }, "ca. " + fmt(r.size_eur) + " €", h("div", { class: "mut" }, "Gebühr hin+zurück " + fmt(feeRound(r.size_eur) * 100, 1) + " %"))))) : null,
     h("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px" }, search, sortSel),
     chips,
     list.length ? h("p", { class: "mut" }, list.length + " Treffer. Tippe auf eine Aktie für den Kursverlauf.") : null,
@@ -182,12 +211,12 @@ async function tabSignale() {
       h("div", { class: "row" },
         h("div", {}, h("span", { class: "sym" }, names.get(r.symbol) || r.symbol), " ", h("span", { class: "mut" }, r.symbol)),
         h("span", { class: "badge " + badgeClass(r.signal) }, r.signal + " · " + r.score)),
-      h("div", { class: "row mut", style: "margin-top:4px" }, h("span", {}, "Kurs " + fmt(r.close)), h("span", {}, r.why || "")),
+      h("div", { class: "row mut", style: "margin-top:4px" }, h("span", {}, "Kurs " + fmt(r.close) + " " + curSign(r.currency)), h("span", { style: "text-align:right" }, plainWhy(r.why))),
       h("div", { class: "grid" },
         h("div", {}, "Stop ca.", h("b", {}, fmt(r.stop_price))),
         h("div", {}, "Max. Position", h("b", {}, fmt(r.size_eur) + " €")),
-        h("div", {}, "RSI", h("b", {}, fmt(r.rsi, 0))),
-        h("div", {}, "12 Monate", h("b", { class: r.mom12 >= 0 ? "pos" : "neg" }, pct(r.mom12, 0))),
+        h("div", {}, "Gebühr hin+zurück", h("b", {}, fmt(feeRound(r.size_eur) * 100, 1) + " %")),
+                h("div", {}, "12 Monate", h("b", { class: r.mom12 >= 0 ? "pos" : "neg" }, pct(r.mom12, 0))),
         h("div", {}, "Zum Hoch", h("b", {}, pct(r.dist_high, 0))),
         h("div", {}, "Schwankung", h("b", {}, fmt(r.vola * 100, 0) + " %")))));
   }
@@ -195,14 +224,16 @@ async function tabSignale() {
 }
 
 async function tabPositionen() {
-  const [{ data: hold, error }, sig, names] = await Promise.all([sb.from("holdings").select("*").order("symbol"), loadSignals(), loadNames()]);
+  const [{ data: hold, error }, sig, names, fx] = await Promise.all([sb.from("holdings").select("*").order("symbol"), loadSignals(), loadNames(), loadFx()]);
   if (error) throw error;
   let value = 0, cost = 0;
   const cards = (hold || []).map((p) => {
     const s = sig.get(p.symbol);
     const price = s ? Number(s.close) : null;
-    const v = price != null ? price * p.shares : null;
-    if (v != null) { value += v; cost += p.shares * p.avg_price; }
+    const cur = s && s.currency ? s.currency : "EUR";
+    const rate = fx.get(cur) ?? null;
+    const v = price != null && rate != null ? price * p.shares * rate : null;
+    if (v != null) { value += v; cost += p.shares * p.avg_price * rate; }
     const chg = price != null ? price / p.avg_price - 1 : null;
     const stop = p.stop_price != null ? Number(p.stop_price) : p.avg_price * 0.85;
     const hit = price != null && price <= stop;
@@ -212,15 +243,25 @@ async function tabPositionen() {
         s ? h("span", { class: "badge " + badgeClass(s.signal) }, s.signal) : null),
       h("div", { class: "grid" },
         h("div", {}, "Stück", h("b", {}, fmt(p.shares, 4))),
-        h("div", {}, "Einstand", h("b", {}, fmt(p.avg_price))),
-        h("div", {}, "Kurs", h("b", {}, fmt(price))),
+        h("div", {}, "Einstand", h("b", {}, fmt(p.avg_price) + " " + curSign(cur))),
+        h("div", {}, "Kurs", h("b", {}, fmt(price) + " " + curSign(cur))),
         h("div", {}, "Ergebnis", h("b", { class: chg == null ? "" : chg >= 0 ? "pos" : "neg" }, pct(chg))),
-        h("div", {}, "Stop", h("b", { class: hit ? "neg" : "" }, fmt(stop) + (p.stop_price == null ? " (−15 %)" : ""))),
+        h("div", {}, "Stop", h("b", { class: hit ? "neg" : "" }, fmt(stop) + " " + curSign(cur) + (p.stop_price == null ? " (−15 %)" : ""))),
         h("div", {}, "Wert", h("b", {}, v != null ? fmt(v) + " €" : "–"))),
       p.note ? h("p", { class: "mut" }, p.note) : null,
-      h("div", { style: "margin-top:8px;text-align:right" },
+      h("div", { style: "margin-top:8px;text-align:right;display:flex;gap:8px;justify-content:flex-end" },
+        h("button", { class: "sec", onclick: async () => {
+          const inp = prompt("Zu welchem Kurs (" + curSign(cur) + " je Stück) hast du " + p.symbol + " verkauft?", price != null ? String(price).replace(".", ",") : "");
+          if (inp == null) return;
+          const sp = parseFloat(String(inp).replace(",", "."));
+          if (!(sp > 0)) return toast("Ungültiger Kurs");
+          const { error: e1 } = await sb.from("trades").insert({ symbol: p.symbol, name: names.get(p.symbol) || p.symbol, currency: cur, shares: p.shares, buy_price: p.avg_price, sell_price: sp, opened_at: p.opened_at, signal_at_sale: s ? s.signal : null, note: p.note });
+          if (e1) return toast("Fehler: " + e1.message);
+          const { error: e2 } = await sb.from("holdings").delete().eq("symbol", p.symbol);
+          if (e2) toast("Fehler: " + e2.message); else { toast("Im Journal gespeichert"); render(); }
+        } }, "Verkauft"),
         h("button", { class: "sec del", onclick: async () => {
-          if (!confirm("Position " + p.symbol + " entfernen?")) return;
+          if (!confirm("Position " + p.symbol + " ohne Journal-Eintrag entfernen (z. B. falsch eingetragen)?")) return;
           const { error: e } = await sb.from("holdings").delete().eq("symbol", p.symbol);
           if (e) toast("Fehler: " + e.message); else render();
         } }, "Entfernen")));
@@ -251,7 +292,7 @@ async function tabPositionen() {
     h("h2", {}, "Position eintragen"),
     h("div", { class: "card" }, h("label", {}, "Symbol"), sym, dl, h("label", {}, "Stück"), sh, h("label", {}, "Einstandskurs"), avg,
       h("label", {}, "Stop-Kurs (optional)"), stp, h("label", {}, "Notiz"), note, h("button", { class: "pri", onclick: save }, "Speichern")),
-    h("p", { class: "mut" }, "Kurse und Beträge werden in der Notierungswährung der Börse gezeigt (bei .DE-Werten Euro)."),
+    h("p", { class: "mut" }, "Einzelkurse stehen in der Börsenwährung, Wert und Gesamtergebnis sind in Euro umgerechnet. Der Einstand wird dabei mit dem heutigen Wechselkurs umgerechnet, die Euro-Zahlen sind daher eine Näherung."),
   ];
 }
 
@@ -288,7 +329,7 @@ async function tabEinstellungen() {
   const { data: s, error } = await sb.from("settings").select("*").eq("id", 1).single();
   if (error) throw error;
   const mk = (label, key, step = "any") => { const i = h("input", { type: "number", step, inputmode: "decimal", value: s[key] }); i.dataset.key = key; return [h("label", {}, label), i]; };
-  const f = [mk("Depotgröße (€)", "depot_eur"), mk("Risiko pro Trade (% vom Depot)", "risk_pct"), mk("Maximale Positionsgröße (% vom Depot)", "max_position_pct"), mk("Kandidat ab Score (1 bis 4)", "min_score_buy", "1")];
+  const f = [mk("Depotgröße (€)", "depot_eur"), mk("Risiko pro Trade (% vom Depot)", "risk_pct"), mk("Maximale Positionsgröße (% vom Depot)", "max_position_pct"), mk("Kandidat ab Score (1 bis 4)", "min_score_buy", "1"), mk("Gebühr je Trade (%)", "fee_pct"), mk("Mindestgebühr je Trade (€)", "fee_min_eur")];
   const save = async () => {
     const upd = {};
     for (const [, inp] of f) upd[inp.dataset.key] = parseFloat(String(inp.value).replace(",", "."));
@@ -304,10 +345,33 @@ async function tabEinstellungen() {
 }
 
 async function tabVerlauf() {
-  const { data, error } = await sb.from("alert_log").select("*").order("created_at", { ascending: false }).limit(50);
+  const [{ data, error }, { data: tr }, fx] = await Promise.all([
+    sb.from("alert_log").select("*").order("created_at", { ascending: false }).limit(50),
+    sb.from("trades").select("*").order("closed_at", { ascending: false }), loadFx()]);
   if (error) throw error;
-  if (!data.length) return [h("p", { class: "mut" }, "Noch keine Meldungen.")];
-  return data.map((a) => h("div", { class: "card" }, h("div", { class: "mut" }, new Date(a.created_at).toLocaleString("de-DE")), h("div", {}, a.message)));
+  const trades = tr || [];
+  let win = 0, sumEur = 0;
+  const rows = trades.map((t) => {
+    const rate = fx.get(t.currency || "EUR") ?? 1;
+    const gain = (t.sell_price - t.buy_price) * t.shares * rate;
+    const ret = t.sell_price / t.buy_price - 1;
+    if (gain > 0) win++; sumEur += gain;
+    return h("div", { class: "card" },
+      h("div", { class: "row" }, h("span", { class: "sym" }, t.name || t.symbol), h("b", { class: gain >= 0 ? "pos" : "neg" }, (gain >= 0 ? "+" : "") + fmt(gain) + " € · " + pct(ret))),
+      h("div", { class: "mut" }, fmt(t.shares, 4) + " Stück · gekauft " + fmt(t.buy_price) + " " + curSign(t.currency) + " · verkauft " + fmt(t.sell_price) + " " + curSign(t.currency) + " am " + new Date(t.closed_at).toLocaleDateString("de-DE") + (t.signal_at_sale ? " · Signal beim Verkauf: " + t.signal_at_sale : "")),
+      t.note ? h("div", { class: "mut" }, t.note) : null,
+      h("div", { style: "text-align:right;margin-top:6px" }, h("button", { class: "sec del", onclick: async () => { if (confirm("Journal-Eintrag löschen?")) { await sb.from("trades").delete().eq("id", t.id); render(); } } }, "Löschen")));
+  });
+  return [
+    h("h2", {}, "Journal (abgeschlossene Trades)"),
+    trades.length ? h("div", { class: "card" },
+      h("div", { class: "row" }, h("span", { class: "mut" }, "Trades"), h("b", {}, trades.length)),
+      h("div", { class: "row" }, h("span", { class: "mut" }, "Davon im Plus"), h("b", {}, win + " (" + fmt((win / trades.length) * 100, 0) + " %)")),
+      h("div", { class: "row" }, h("span", { class: "mut" }, "Ergebnis gesamt (vor Gebühren)"), h("b", { class: sumEur >= 0 ? "pos" : "neg" }, (sumEur >= 0 ? "+" : "") + fmt(sumEur) + " €"))) : null,
+    ...(rows.length ? rows : [h("p", { class: "mut" }, "Noch keine abgeschlossenen Trades. Wenn du eine Position verkaufst, tippe bei den Positionen auf Verkauft, dann landet sie hier.")]),
+    h("h2", {}, "Meldungen"),
+    ...(data.length ? data.map((a) => h("div", { class: "card" }, h("div", { class: "mut" }, new Date(a.created_at).toLocaleString("de-DE")), h("div", {}, a.message))) : [h("p", { class: "mut" }, "Noch keine Meldungen.")]),
+  ];
 }
 
 // ---------- Kursdiagramm ----------
@@ -400,6 +464,7 @@ async function render() {
 
 sb.auth.onAuthStateChange((_ev, session) => (session ? render() : renderLogin()));
 sb.auth.getSession().then(({ data }) => (data.session ? render() : renderLogin()));
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 </script>
 </body>
 </html>
