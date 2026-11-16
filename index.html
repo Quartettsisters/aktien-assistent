@@ -155,7 +155,7 @@ async function tabSignale() {
   const { data: heldRows } = await sb.from("holdings").select("symbol");
   const heldSet = new Set((heldRows || []).map((x) => x.symbol));
   const top = all.filter((r) => r.signal === "Kandidat" && !heldSet.has(r.symbol) && !/\(ETF\)/i.test(names.get(r.symbol) || ""))
-    .sort((a, b) => b.score - a.score || a.vola - b.vola).slice(0, 5);
+    .sort((a, b) => b.score - a.score || (state.mut ? b.mom12 - a.mom12 : a.vola - b.vola)).slice(0, 5);
   const out = [
     h("div", { class: "card" },
       h("div", { class: "row" }, h("b", {}, all.length + " Werte beobachtet"), refresh),
@@ -165,8 +165,10 @@ async function tabSignale() {
         h("div", {}, "Meiden", h("b", { class: "neg" }, count("meiden")))),
       asOf ? h("p", { class: "mut", style: "margin:8px 0 0" }, "Stand Börsenschluss: " + new Date(asOf).toLocaleDateString("de-DE")) : null),
     top.length ? h("div", { class: "card" },
-      h("b", {}, "Top " + top.length + " für dein Depot"),
-      h("p", { class: "mut", style: "margin:4px 0 8px" }, "Höchster Score, bei Gleichstand die ruhigere Aktie. Nur Einzelaktien, ohne ETFs und ohne bereits gehaltene Werte."),
+      h("div", { class: "row" }, h("b", {}, "Top " + top.length + " für dein Depot"),
+        h("div", { class: "chips", style: "margin:0" }, [["Vorsichtig", false], ["Mutig", true]].map(([t, v]) =>
+          h("button", { class: "chip" + (!!state.mut === v ? " on" : ""), onclick: () => { state.mut = v; render(); } }, t)))),
+      h("p", { class: "mut", style: "margin:4px 0 8px" }, "Höchster Score, bei Gleichstand " + (state.mut ? "die Aktie mit dem stärksten 12-Monats-Anstieg" : "die ruhigere Aktie") + ". Nur Einzelaktien, ohne ETFs und ohne bereits gehaltene Werte."),
       ...top.map((r, i) => h("div", { class: "row", style: "cursor:pointer;padding:6px 0;border-top:1px solid var(--line, #2a2f3a)", onclick: () => openChart(r.symbol, names.get(r.symbol) || r.symbol, r.stop_price) },
         h("div", {}, h("b", {}, (i + 1) + ". " + (names.get(r.symbol) || r.symbol)), " ", h("span", { class: "mut" }, "Score " + r.score + " · Schwankung " + fmt(r.vola * 100, 0) + " %")),
         h("span", {}, "ca. " + fmt(r.size_eur) + " €")))) : null,
