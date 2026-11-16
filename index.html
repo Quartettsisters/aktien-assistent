@@ -56,7 +56,7 @@ const SUPABASE_KEY = "sb_publishable_etYhKUB4ZWXNCJhWJOXVSw_6fP7sCeK";
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const $app = document.getElementById("app");
-const state = { tab: "signale", filter: "alle" };
+const state = { tab: "signale", filter: "alle", q: "", sort: "score" };
 
 // ---------- Helfer (alles ueber textContent, kein innerHTML) ----------
 function h(tag, attrs, ...kids) {
@@ -96,6 +96,15 @@ function renderLogin() {
     email, pw, h("button", { class: "pri", onclick: go }, "Anmelden")));
 }
 
+async function callScan(symbols) {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error("Nicht angemeldet");
+  const qs = symbols && symbols.length ? "?symbols=" + encodeURIComponent(symbols.join(",")) : "";
+  const r = await fetch(SUPABASE_URL + "/functions/v1/scan" + qs, { headers: { Authorization: "Bearer " + session.access_token, apikey: SUPABASE_KEY } });
+  if (!r.ok) throw new Error("Auswertung fehlgeschlagen (" + r.status + ")");
+  return r.json();
+}
+
 // ---------- Daten ----------
 async function loadSignals() {
   const { data, error } = await sb.from("signals").select("*").order("as_of", { ascending: false }).limit(600);
@@ -112,13 +121,48 @@ async function loadNames() {
 // ---------- Tabs ----------
 async function tabSignale() {
   const [sig, names] = await Promise.all([loadSignals(), loadNames()]);
-  const list = [...sig.values()].filter((r) => state.filter === "alle" || r.signal === state.filter)
-    .sort((a, b) => b.score - a.score || a.symbol.localeCompare(b.symbol));
+  const all = [...sig.values()];
+  const count = (k) => all.filter((r) => r.signal === k).length;
+  const sorters = {
+    score: (a, b) => b.score - a.score || a.symbol.localeCompare(b.symbol),
+    name: (a, b) => (names.get(a.symbol) || a.symbol).localeCompare(names.get(b.symbol) || b.symbol),
+    mom: (a, b) => b.mom12 - a.mom12,
+    nah: (a, b) => b.dist_high - a.dist_high,
+    ruhig: (a, b) => a.vola - b.vola,
+  };
+  const q = (state.q || "").trim().toLowerCase();
+  const list = all.filter((r) => (state.filter === "alle" || r.signal === state.filter) &&
+    (!q || r.symbol.toLowerCase().includes(q) || (names.get(r.symbol) || "").toLowerCase().includes(q)))
+    .sort(sorters[state.sort || "score"]);
+
   const chips = h("div", { class: "chips" }, ["alle", "Kandidat", "beobachten", "meiden"].map((f) =>
-    h("button", { class: "chip" + (state.filter === f ? " on" : ""), onclick: () => { state.filter = f; render(); } }, f === "alle" ? "Alle" : f)));
-  const asOf = [...sig.values()][0]?.as_of;
-  const out = [chips, list.length ? h("p", { class: "mut" }, "Tippe auf eine Aktie für den Kursverlauf.") : null, asOf ? h("p", { class: "mut" }, "Stand Börsenschluss: " + new Date(asOf).toLocaleDateString("de-DE")) : null];
-  if (!list.length) out.push(h("p", { class: "mut" }, "Noch keine Daten. Die Auswertung läuft werktags nach Börsenschluss."));
+    h("button", { class: "chip" + (state.filter === f ? " on" : ""), onclick: () => { state.filter = f; render(); } },
+      (f === "alle" ? "Alle" : f) + " " + (f === "alle" ? all.length : count(f)))));
+  const search = h("input", { type: "search", placeholder: "Suchen (Name oder Symbol)", value: state.q || "", style: "margin:0" });
+  search.addEventListener("input", () => { state.q = search.value; clearTimeout(search.t); search.t = setTimeout(async () => { await render(); const el = document.querySelector("input[type=search]"); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 350); });
+  const sortSel = h("select", { style: "margin:0" }, [["score", "Sortieren: Score"], ["name", "Sortieren: Name"], ["mom", "Sortieren: 12-Monats-Entwicklung"], ["nah", "Sortieren: nah am Hoch"], ["ruhig", "Sortieren: wenig Schwankung"]].map(([v, t]) => h("option", { value: v, selected: (state.sort || "score") === v }, t)));
+  sortSel.addEventListener("change", () => { state.sort = sortSel.value; render(); });
+  const refresh = h("button", { class: "sec", onclick: async (e) => {
+    e.target.disabled = true; e.target.textContent = "Aktualisiert …";
+    try { const r = await callScan(); const err = Object.keys(r.errors || {}).length; toast(r.analysed + " Werte aktualisiert" + (err ? ", " + err + " mit Fehler" : "")); }
+    catch (x) { toast("Fehler: " + x.message); }
+    render();
+  } }, "Jetzt aktualisieren");
+
+  const asOf = all.map((r) => r.as_of).sort().pop();
+  const out = [
+    h("div", { class: "card" },
+      h("div", { class: "row" }, h("b", {}, all.length + " Werte beobachtet"), refresh),
+      h("div", { class: "grid" },
+        h("div", {}, "Kandidaten", h("b", { class: "pos" }, count("Kandidat"))),
+        h("div", {}, "Beobachten", h("b", { style: "color:var(--warn)" }, count("beobachten"))),
+        h("div", {}, "Meiden", h("b", { class: "neg" }, count("meiden")))),
+      asOf ? h("p", { class: "mut", style: "margin:8px 0 0" }, "Stand Börsenschluss: " + new Date(asOf).toLocaleDateString("de-DE")) : null),
+    h("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px" }, search, sortSel),
+    chips,
+    list.length ? h("p", { class: "mut" }, list.length + " Treffer. Tippe auf eine Aktie für den Kursverlauf.") : null,
+  ];
+  if (!list.length) out.push(h("p", { class: "mut" }, all.length ? "Keine Treffer." : "Noch keine Daten. Die Auswertung läuft werktags nach Börsenschluss, oder tippe auf Jetzt aktualisieren."));
   for (const r of list) {
     out.push(h("div", { class: "card", style: "cursor:pointer", onclick: () => openChart(r.symbol, names.get(r.symbol) || r.symbol, r.stop_price) },
       h("div", { class: "row" },
@@ -206,11 +250,18 @@ async function tabWatchlist() {
     const symbol = sym.value.trim().toUpperCase();
     if (!symbol) return;
     const { error: e } = await sb.from("watchlist").upsert({ symbol, name: nm.value.trim() || symbol, active: true });
-    if (e) toast("Fehler: " + e.message); else { toast("Hinzugefügt, erste Auswertung beim nächsten Lauf"); render(); }
+    if (e) return toast("Fehler: " + e.message);
+    toast("Wird ausgewertet …");
+    try {
+      const r = await callScan([symbol]);
+      if (r.errors && r.errors[symbol]) { await sb.from("watchlist").delete().eq("symbol", symbol); toast(symbol + ": " + r.errors[symbol]); }
+      else toast(symbol + " hinzugefügt: " + r.results[symbol].signal + " (Score " + r.results[symbol].score + ")");
+    } catch (x) { toast("Hinzugefügt, Auswertung beim nächsten Lauf (" + x.message + ")"); }
+    render();
   };
   return [
     h("div", { class: "card" }, h("label", {}, "Neuer Wert"), sym, nm, h("button", { class: "pri", onclick: add }, "Hinzufügen")),
-    h("p", { class: "mut" }, "Symbole wie bei Yahoo Finance: deutsche Werte mit .DE, Amsterdam .AS, Paris .PA."),
+    h("p", { class: "mut" }, "Symbole wie bei Yahoo Finance: deutsche Werte mit .DE, Amsterdam .AS, Paris .PA. Neue Werte werden sofort ausgewertet, unbekannte Symbole werden abgelehnt."),
     ...(data || []).map((w) => h("div", { class: "card row" },
       h("div", {}, h("span", { class: "sym" }, w.name || w.symbol), " ", h("span", { class: "mut" }, w.symbol)),
       h("div", {},
