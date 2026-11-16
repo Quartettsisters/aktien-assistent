@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1419">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Aktien">
+<title>Aktien-Assistent</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+:root{--bg:#0f1419;--card:#18202a;--line:#27313d;--tx:#e8edf2;--mut:#8a97a6;--ok:#34c759;--warn:#ffb020;--bad:#ff5a5f;--acc:#4da3ff}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+body{padding:env(safe-area-inset-top) 0 calc(76px + env(safe-area-inset-bottom))}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:12px 16px;display:flex;justify-content:space-between;align-items:center}
+header h1{font-size:18px;margin:0}
+main{max-width:720px;margin:0 auto;padding:14px 14px 24px}
+nav{position:fixed;bottom:0;left:0;right:0;background:#121922;border-top:1px solid var(--line);display:flex;padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;background:none;border:0;color:var(--mut);padding:12px 2px;font-size:12px}
+nav button.on{color:var(--acc);font-weight:600}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:10px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.sym{font-weight:650}
+.mut{color:var(--mut);font-size:13px}
+.badge{font-size:12px;font-weight:650;padding:3px 9px;border-radius:99px;border:1px solid}
+.b-k{color:var(--ok);border-color:var(--ok)}.b-b{color:var(--warn);border-color:var(--warn)}.b-m{color:var(--bad);border-color:var(--bad)}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}
+.grid div{font-size:13px}.grid b{display:block;font-size:14px}
+.chips{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.chip{background:var(--card);border:1px solid var(--line);color:var(--tx);border-radius:99px;padding:6px 12px;font-size:14px}
+.chip.on{border-color:var(--acc);color:var(--acc)}
+input,select{width:100%;background:#0c1116;color:var(--tx);border:1px solid var(--line);border-radius:10px;padding:11px;font-size:16px;margin:4px 0 10px}
+label{font-size:13px;color:var(--mut)}
+button.pri{width:100%;background:var(--acc);color:#04121f;border:0;border-radius:10px;padding:12px;font-size:16px;font-weight:650}
+button.sec{background:none;border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:6px 10px;font-size:13px}
+button.del{border-color:var(--bad);color:var(--bad)}
+.pos{color:var(--ok)}.neg{color:var(--bad)}
+#toast{position:fixed;left:50%;transform:translateX(-50%);bottom:90px;background:#2b3644;padding:10px 16px;border-radius:10px;display:none;z-index:9;max-width:90%}
+.login{max-width:380px;margin:12vh auto 0;padding:0 18px}
+h2{font-size:16px;margin:18px 0 8px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast"></div>
+<script>
+const SUPABASE_URL = "https://pxhihjlamqaczgttraqa.supabase.co";
+const SUPABASE_KEY = "sb_publishable_eaExssRkMV1iOm7GIWMA-A_SY0kbLuE";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const $app = document.getElementById("app");
+const state = { tab: "signale", filter: "alle" };
+
+// ---------- Helfer (alles ueber textContent, kein innerHTML) ----------
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid == null || kid === false) continue;
+    el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  }
+  return el;
+}
+const fmt = (n, d = 2) => n == null ? "–" : Number(n).toLocaleString("de-DE", { minimumFractionDigits: d, maximumFractionDigits: d });
+const pct = (n, d = 1) => n == null ? "–" : (n >= 0 ? "+" : "") + fmt(n * 100, d) + " %";
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.style.display = "block";
+  clearTimeout(toast.t); toast.t = setTimeout(() => (t.style.display = "none"), 3500);
+}
+const badgeClass = (s) => s === "Kandidat" ? "b-k" : s === "meiden" ? "b-m" : "b-b";
+
+// ---------- Login ----------
+function renderLogin() {
+  const email = h("input", { type: "email", autocomplete: "username", placeholder: "E-Mail" });
+  const pw = h("input", { type: "password", autocomplete: "current-password", placeholder: "Passwort" });
+  const go = async () => {
+    const { error } = await sb.auth.signInWithPassword({ email: email.value.trim(), password: pw.value });
+    if (error) toast("Anmeldung fehlgeschlagen");
+  };
+  pw.addEventListener("keydown", (e) => e.key === "Enter" && go());
+  $app.replaceChildren(h("div", { class: "login" },
+    h("h1", {}, "Aktien-Assistent"),
+    h("p", { class: "mut" }, "Bitte anmelden."),
+    email, pw, h("button", { class: "pri", onclick: go }, "Anmelden")));
+}
+
+// ---------- Daten ----------
+async function loadSignals() {
+  const { data, error } = await sb.from("signals").select("*").order("as_of", { ascending: false }).limit(600);
+  if (error) throw error;
+  const latest = new Map();
+  for (const r of data) if (!latest.has(r.symbol)) latest.set(r.symbol, r);
+  return latest;
+}
+async function loadNames() {
+  const { data } = await sb.from("watchlist").select("symbol,name,active");
+  return new Map((data || []).map((w) => [w.symbol, w.name || w.symbol]));
+}
+
+// ---------- Tabs ----------
+async function tabSignale() {
+  const [sig, names] = await Promise.all([loadSignals(), loadNames()]);
+  const list = [...sig.values()].filter((r) => state.filter === "alle" || r.signal === state.filter)
+    .sort((a, b) => b.score - a.score || a.symbol.localeCompare(b.symbol));
+  const chips = h("div", { class: "chips" }, ["alle", "Kandidat", "beobachten", "meiden"].map((f) =>
+    h("button", { class: "chip" + (state.filter === f ? " on" : ""), onclick: () => { state.filter = f; render(); } }, f === "alle" ? "Alle" : f)));
+  const asOf = [...sig.values()][0]?.as_of;
+  const out = [chips, asOf ? h("p", { class: "mut" }, "Stand Börsenschluss: " + new Date(asOf).toLocaleDateString("de-DE")) : null];
+  if (!list.length) out.push(h("p", { class: "mut" }, "Noch keine Daten. Die Auswertung läuft werktags nach Börsenschluss."));
+  for (const r of list) {
+    out.push(h("div", { class: "card" },
+      h("div", { class: "row" },
+        h("div", {}, h("span", { class: "sym" }, names.get(r.symbol) || r.symbol), " ", h("span", { class: "mut" }, r.symbol)),
+        h("span", { class: "badge " + badgeClass(r.signal) }, r.signal + " · " + r.score)),
+      h("div", { class: "row mut", style: "margin-top:4px" }, h("span", {}, "Kurs " + fmt(r.close)), h("span", {}, r.why || "")),
+      h("div", { class: "grid" },
+        h("div", {}, "Stop ca.", h("b", {}, fmt(r.stop_price))),
+        h("div", {}, "Max. Position", h("b", {}, fmt(r.size_eur) + " €")),
+        h("div", {}, "RSI", h("b", {}, fmt(r.rsi, 0))),
+        h("div", {}, "12 Monate", h("b", { class: r.mom12 >= 0 ? "pos" : "neg" }, pct(r.mom12, 0))),
+        h("div", {}, "Zum Hoch", h("b", {}, pct(r.dist_high, 0))),
+        h("div", {}, "Schwankung", h("b", {}, fmt(r.vola * 100, 0) + " %")))));
+  }
+  return out;
+}
+
+async function tabPositionen() {
+  const [{ data: hold, error }, sig, names] = await Promise.all([sb.from("holdings").select("*").order("symbol"), loadSignals(), loadNames()]);
+  if (error) throw error;
+  let value = 0, cost = 0;
+  const cards = (hold || []).map((p) => {
+    const s = sig.get(p.symbol);
+    const price = s ? Number(s.close) : null;
+    const v = price != null ? price * p.shares : null;
+    if (v != null) { value += v; cost += p.shares * p.avg_price; }
+    const chg = price != null ? price / p.avg_price - 1 : null;
+    const stop = p.stop_price != null ? Number(p.stop_price) : p.avg_price * 0.85;
+    const hit = price != null && price <= stop;
+    return h("div", { class: "card" },
+      h("div", { class: "row" },
+        h("div", {}, h("span", { class: "sym" }, names.get(p.symbol) || p.symbol), " ", h("span", { class: "mut" }, p.symbol)),
+        s ? h("span", { class: "badge " + badgeClass(s.signal) }, s.signal) : null),
+      h("div", { class: "grid" },
+        h("div", {}, "Stück", h("b", {}, fmt(p.shares, 4))),
+        h("div", {}, "Einstand", h("b", {}, fmt(p.avg_price))),
+        h("div", {}, "Kurs", h("b", {}, fmt(price))),
+        h("div", {}, "Ergebnis", h("b", { class: chg == null ? "" : chg >= 0 ? "pos" : "neg" }, pct(chg))),
+        h("div", {}, "Stop", h("b", { class: hit ? "neg" : "" }, fmt(stop) + (p.stop_price == null ? " (−15 %)" : ""))),
+        h("div", {}, "Wert", h("b", {}, v != null ? fmt(v) + " €" : "–"))),
+      p.note ? h("p", { class: "mut" }, p.note) : null,
+      h("div", { style: "margin-top:8px;text-align:right" },
+        h("button", { class: "sec del", onclick: async () => {
+          if (!confirm("Position " + p.symbol + " entfernen?")) return;
+          const { error: e } = await sb.from("holdings").delete().eq("symbol", p.symbol);
+          if (e) toast("Fehler: " + e.message); else render();
+        } }, "Entfernen")));
+  });
+  const sym = h("input", { list: "wl", placeholder: "z. B. SAP.DE", autocapitalize: "characters" });
+  const dl = h("datalist", { id: "wl" }, [...names.keys()].map((k) => h("option", { value: k })));
+  const sh = h("input", { type: "number", step: "any", inputmode: "decimal", placeholder: "z. B. 0,12" });
+  const avg = h("input", { type: "number", step: "any", inputmode: "decimal", placeholder: "Kaufkurs je Stück" });
+  const stp = h("input", { type: "number", step: "any", inputmode: "decimal", placeholder: "leer = 15 % unter Einstand" });
+  const note = h("input", { placeholder: "Grund für den Kauf (empfohlen)" });
+  const save = async () => {
+    const symbol = sym.value.trim().toUpperCase();
+    const shares = parseFloat(String(sh.value).replace(",", "."));
+    const avgp = parseFloat(String(avg.value).replace(",", "."));
+    if (!symbol || !(shares > 0) || !(avgp > 0)) return toast("Symbol, Stück und Kaufkurs ausfüllen");
+    const stop = stp.value === "" ? null : parseFloat(String(stp.value).replace(",", "."));
+    const { error: e } = await sb.from("holdings").upsert({ symbol, shares, avg_price: avgp, stop_price: stop, note: note.value.trim() || null });
+    if (e) return toast("Fehler: " + e.message);
+    // Symbol auch beobachten, damit es jeden Tag ausgewertet wird
+    await sb.from("watchlist").upsert({ symbol, name: names.get(symbol) || symbol }, { onConflict: "symbol", ignoreDuplicates: true });
+    toast("Gespeichert"); render();
+  };
+  return [
+    h("div", { class: "card" }, h("div", { class: "row" }, h("span", { class: "mut" }, "Wert aller Positionen"), h("b", {}, fmt(value) + " €")),
+      h("div", { class: "row" }, h("span", { class: "mut" }, "Ergebnis gesamt"), h("b", { class: value >= cost ? "pos" : "neg" }, cost ? pct(value / cost - 1) : "–"))),
+    ...cards,
+    !cards.length ? h("p", { class: "mut" }, "Noch keine Positionen. Trag hier ein, was du wirklich gekauft hast, dann bekommst du Stop- und Verkaufswarnungen.") : null,
+    h("h2", {}, "Position eintragen"),
+    h("div", { class: "card" }, h("label", {}, "Symbol"), sym, dl, h("label", {}, "Stück"), sh, h("label", {}, "Einstandskurs"), avg,
+      h("label", {}, "Stop-Kurs (optional)"), stp, h("label", {}, "Notiz"), note, h("button", { class: "pri", onclick: save }, "Speichern")),
+    h("p", { class: "mut" }, "Kurse und Beträge werden in der Notierungswährung der Börse gezeigt (bei .DE-Werten Euro)."),
+  ];
+}
+
+async function tabWatchlist() {
+  const { data, error } = await sb.from("watchlist").select("*").order("symbol");
+  if (error) throw error;
+  const sym = h("input", { placeholder: "Symbol, z. B. VOW3.DE", autocapitalize: "characters" });
+  const nm = h("input", { placeholder: "Name (optional)" });
+  const add = async () => {
+    const symbol = sym.value.trim().toUpperCase();
+    if (!symbol) return;
+    const { error: e } = await sb.from("watchlist").upsert({ symbol, name: nm.value.trim() || symbol, active: true });
+    if (e) toast("Fehler: " + e.message); else { toast("Hinzugefügt, erste Auswertung beim nächsten Lauf"); render(); }
+  };
+  return [
+    h("div", { class: "card" }, h("label", {}, "Neuer Wert"), sym, nm, h("button", { class: "pri", onclick: add }, "Hinzufügen")),
+    h("p", { class: "mut" }, "Symbole wie bei Yahoo Finance: deutsche Werte mit .DE, Amsterdam .AS, Paris .PA."),
+    ...(data || []).map((w) => h("div", { class: "card row" },
+      h("div", {}, h("span", { class: "sym" }, w.name || w.symbol), " ", h("span", { class: "mut" }, w.symbol)),
+      h("div", {},
+        h("button", { class: "sec", onclick: async () => { await sb.from("watchlist").update({ active: !w.active }).eq("symbol", w.symbol); render(); } }, w.active ? "aktiv" : "pausiert"), " ",
+        h("button", { class: "sec del", onclick: async () => { if (confirm(w.symbol + " entfernen?")) { await sb.from("watchlist").delete().eq("symbol", w.symbol); render(); } } }, "✕")))),
+  ];
+}
+
+async function tabEinstellungen() {
+  const { data: s, error } = await sb.from("settings").select("*").eq("id", 1).single();
+  if (error) throw error;
+  const mk = (label, key, step = "any") => { const i = h("input", { type: "number", step, inputmode: "decimal", value: s[key] }); i.dataset.key = key; return [h("label", {}, label), i]; };
+  const f = [mk("Depotgröße (€)", "depot_eur"), mk("Risiko pro Trade (% vom Depot)", "risk_pct"), mk("Maximale Positionsgröße (% vom Depot)", "max_position_pct"), mk("Kandidat ab Score (1 bis 4)", "min_score_buy", "1")];
+  const save = async () => {
+    const upd = {};
+    for (const [, inp] of f) upd[inp.dataset.key] = parseFloat(String(inp.value).replace(",", "."));
+    const { error: e } = await sb.from("settings").update(upd).eq("id", 1);
+    toast(e ? "Fehler: " + e.message : "Gespeichert, gilt ab dem nächsten Lauf");
+  };
+  return [
+    h("div", { class: "card" }, f.flat(), h("button", { class: "pri", onclick: save }, "Speichern")),
+    h("div", { class: "card" }, h("b", {}, "Wie der Score entsteht"),
+      h("p", { class: "mut" }, "+1 Kurs über 200-Tage-Linie, +1 50-Tage- über 200-Tage-Linie, +1 positive Entwicklung über 12 Monate, +1 RSI zwischen 40 und 70. −1 bei RSI über 75, −1 bei mehr als 25 % unter dem 52-Wochen-Hoch. Kandidat ab dem eingestellten Score, meiden bei 0 oder weniger.")),
+    h("div", { class: "card" }, h("button", { class: "sec", onclick: () => sb.auth.signOut() }, "Abmelden")),
+  ];
+}
+
+async function tabVerlauf() {
+  const { data, error } = await sb.from("alert_log").select("*").order("created_at", { ascending: false }).limit(50);
+  if (error) throw error;
+  if (!data.length) return [h("p", { class: "mut" }, "Noch keine Meldungen.")];
+  return data.map((a) => h("div", { class: "card" }, h("div", { class: "mut" }, new Date(a.created_at).toLocaleString("de-DE")), h("div", {}, a.message)));
+}
+
+const TABS = [["signale", "Signale", tabSignale], ["positionen", "Positionen", tabPositionen], ["watchlist", "Watchlist", tabWatchlist], ["verlauf", "Verlauf", tabVerlauf], ["einstellungen", "Mehr", tabEinstellungen]];
+
+async function render() {
+  const cur = TABS.find((t) => t[0] === state.tab);
+  const main = h("main", {}, h("p", { class: "mut" }, "Lädt …"));
+  $app.replaceChildren(
+    h("header", {}, h("h1", {}, cur[1])),
+    main,
+    h("nav", {}, TABS.map((t) => h("button", { class: state.tab === t[0] ? "on" : "", onclick: () => { state.tab = t[0]; render(); } }, t[1]))));
+  try { main.replaceChildren(...(await cur[2]()).filter(Boolean)); }
+  catch (e) { main.replaceChildren(h("p", { class: "neg" }, "Fehler: " + (e.message || e))); }
+}
+
+sb.auth.onAuthStateChange((_ev, session) => (session ? render() : renderLogin()));
+sb.auth.getSession().then(({ data }) => (data.session ? render() : renderLogin()));
+</script>
+</body>
+</html>
