@@ -154,7 +154,7 @@ async function tabSignale() {
   const asOf = all.map((r) => r.as_of).sort().pop();
   const { data: heldRows } = await sb.from("holdings").select("symbol");
   const heldSet = new Set((heldRows || []).map((x) => x.symbol));
-  const top = all.filter((r) => r.signal === "Kandidat" && !heldSet.has(r.symbol))
+  const top = all.filter((r) => r.signal === "Kandidat" && !heldSet.has(r.symbol) && !/\(ETF\)/i.test(names.get(r.symbol) || ""))
     .sort((a, b) => b.score - a.score || a.vola - b.vola).slice(0, 5);
   const out = [
     h("div", { class: "card" },
@@ -166,7 +166,7 @@ async function tabSignale() {
       asOf ? h("p", { class: "mut", style: "margin:8px 0 0" }, "Stand Börsenschluss: " + new Date(asOf).toLocaleDateString("de-DE")) : null),
     top.length ? h("div", { class: "card" },
       h("b", {}, "Top " + top.length + " für dein Depot"),
-      h("p", { class: "mut", style: "margin:4px 0 8px" }, "Höchster Score, bei Gleichstand die ruhigere Aktie. Ohne bereits gehaltene Werte."),
+      h("p", { class: "mut", style: "margin:4px 0 8px" }, "Höchster Score, bei Gleichstand die ruhigere Aktie. Nur Einzelaktien, ohne ETFs und ohne bereits gehaltene Werte."),
       ...top.map((r, i) => h("div", { class: "row", style: "cursor:pointer;padding:6px 0;border-top:1px solid var(--line, #2a2f3a)", onclick: () => openChart(r.symbol, names.get(r.symbol) || r.symbol, r.stop_price) },
         h("div", {}, h("b", {}, (i + 1) + ". " + (names.get(r.symbol) || r.symbol)), " ", h("span", { class: "mut" }, "Score " + r.score + " · Schwankung " + fmt(r.vola * 100, 0) + " %")),
         h("span", {}, "ca. " + fmt(r.size_eur) + " €")))) : null,
