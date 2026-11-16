@@ -45,8 +45,8 @@ h2{font-size:16px;margin:18px 0 8px}
 <div id="app"></div>
 <div id="toast"></div>
 <script>
-const SUPABASE_URL = "https://pxhihjlamqaczgttraqa.supabase.co";
-const SUPABASE_KEY = "sb_publishable_eaExssRkMV1iOm7GIWMA-A_SY0kbLuE";
+const SUPABASE_URL = "https://ehgkeyscqtcxsujktwrn.supabase.co";
+const SUPABASE_KEY = "sb_publishable_etYhKUB4ZWXNCJhWJOXVSw_6fP7sCeK";
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const $app = document.getElementById("app");
@@ -81,7 +81,7 @@ function renderLogin() {
   const pw = h("input", { type: "password", autocomplete: "current-password", placeholder: "Passwort" });
   const go = async () => {
     const { error } = await sb.auth.signInWithPassword({ email: email.value.trim(), password: pw.value });
-    if (error) toast("Anmeldung fehlgeschlagen");
+    if (error) toast("Anmeldung fehlgeschlagen: " + error.message);
   };
   pw.addEventListener("keydown", (e) => e.key === "Enter" && go());
   $app.replaceChildren(h("div", { class: "login" },
