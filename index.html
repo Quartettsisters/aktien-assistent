@@ -39,6 +39,12 @@ button.del{border-color:var(--bad);color:var(--bad)}
 #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:90px;background:#2b3644;padding:10px 16px;border-radius:10px;display:none;z-index:9;max-width:90%}
 .login{max-width:380px;margin:12vh auto 0;padding:0 18px}
 h2{font-size:16px;margin:18px 0 8px}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:20;display:flex;align-items:flex-end;justify-content:center}
+.modal .box{background:var(--card);border:1px solid var(--line);border-radius:16px 16px 0 0;width:100%;max-width:720px;padding:14px 14px calc(16px + env(safe-area-inset-bottom))}
+.modal svg{width:100%;height:auto;display:block;touch-action:none}
+.leg{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-top:6px}
+.leg i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:4px;border-radius:2px}
+
 </style>
 </head>
 <body>
@@ -111,10 +117,10 @@ async function tabSignale() {
   const chips = h("div", { class: "chips" }, ["alle", "Kandidat", "beobachten", "meiden"].map((f) =>
     h("button", { class: "chip" + (state.filter === f ? " on" : ""), onclick: () => { state.filter = f; render(); } }, f === "alle" ? "Alle" : f)));
   const asOf = [...sig.values()][0]?.as_of;
-  const out = [chips, asOf ? h("p", { class: "mut" }, "Stand Börsenschluss: " + new Date(asOf).toLocaleDateString("de-DE")) : null];
+  const out = [chips, list.length ? h("p", { class: "mut" }, "Tippe auf eine Aktie für den Kursverlauf.") : null, asOf ? h("p", { class: "mut" }, "Stand Börsenschluss: " + new Date(asOf).toLocaleDateString("de-DE")) : null];
   if (!list.length) out.push(h("p", { class: "mut" }, "Noch keine Daten. Die Auswertung läuft werktags nach Börsenschluss."));
   for (const r of list) {
-    out.push(h("div", { class: "card" },
+    out.push(h("div", { class: "card", style: "cursor:pointer", onclick: () => openChart(r.symbol, names.get(r.symbol) || r.symbol, r.stop_price) },
       h("div", { class: "row" },
         h("div", {}, h("span", { class: "sym" }, names.get(r.symbol) || r.symbol), " ", h("span", { class: "mut" }, r.symbol)),
         h("span", { class: "badge " + badgeClass(r.signal) }, r.signal + " · " + r.score)),
@@ -143,8 +149,8 @@ async function tabPositionen() {
     const stop = p.stop_price != null ? Number(p.stop_price) : p.avg_price * 0.85;
     const hit = price != null && price <= stop;
     return h("div", { class: "card" },
-      h("div", { class: "row" },
-        h("div", {}, h("span", { class: "sym" }, names.get(p.symbol) || p.symbol), " ", h("span", { class: "mut" }, p.symbol)),
+      h("div", { class: "row", style: "cursor:pointer", onclick: () => openChart(p.symbol, names.get(p.symbol) || p.symbol, p.stop_price != null ? p.stop_price : p.avg_price * 0.85) },
+        h("div", {}, h("span", { class: "sym" }, names.get(p.symbol) || p.symbol), " ", h("span", { class: "mut" }, p.symbol + " · Verlauf ▸")),
         s ? h("span", { class: "badge " + badgeClass(s.signal) }, s.signal) : null),
       h("div", { class: "grid" },
         h("div", {}, "Stück", h("b", {}, fmt(p.shares, 4))),
@@ -237,6 +243,81 @@ async function tabVerlauf() {
   if (error) throw error;
   if (!data.length) return [h("p", { class: "mut" }, "Noch keine Meldungen.")];
   return data.map((a) => h("div", { class: "card" }, h("div", { class: "mut" }, new Date(a.created_at).toLocaleString("de-DE")), h("div", {}, a.message)));
+}
+
+// ---------- Kursdiagramm ----------
+const SVGNS = "http://www.w3.org/2000/svg";
+function sv(tag, attrs) { const e = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, String(v)); return e; }
+function smaArr(x, n) { const out = new Array(x.length).fill(null); let sum = 0; for (let i = 0; i < x.length; i++) { sum += x[i]; if (i >= n) sum -= x[i - n]; if (i >= n - 1) out[i] = sum / n; } return out; }
+
+async function openChart(symbol, name, stop) {
+  const { data, error } = await sb.from("prices").select("d,close").eq("symbol", symbol).order("d", { ascending: true }).limit(1000);
+  if (error) return toast("Fehler: " + error.message);
+  if (!data || data.length < 20) return toast("Noch kein Kursverlauf. Er füllt sich beim nächsten Tageslauf.");
+  const dates = data.map((r) => r.d), closes = data.map((r) => Number(r.close));
+  const s50 = smaArr(closes, 50), s200 = smaArr(closes, 200);
+  const W = 640, H = 280, ml = 8, mr = 54, mt = 10, mb = 22;
+  let range = 252;
+  const info = h("div", { class: "mut", style: "min-height:22px;margin:6px 0" });
+  const svgHost = h("div");
+  const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => e.key === "Escape" && close();
+  document.addEventListener("keydown", onKey);
+  const rangeBtns = h("div", { class: "chips", style: "margin:8px 0 4px" });
+
+  function draw() {
+    const n = Math.min(range, closes.length), off = closes.length - n;
+    const c = closes.slice(off), a = s50.slice(off), b = s200.slice(off), d = dates.slice(off);
+    const vals = [...c, ...a.filter((v) => v != null), ...b.filter((v) => v != null)];
+    if (stop != null && stop > Math.min(...c) * 0.8) vals.push(Number(stop));
+    let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * 0.06 || 1; lo -= pad; hi += pad;
+    const X = (i) => ml + (i / (n - 1)) * (W - ml - mr), Y = (v) => mt + (1 - (v - lo) / (hi - lo)) * (H - mt - mb);
+    const svg = sv("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Kursverlauf " + symbol });
+    for (let t = 0; t <= 4; t++) {
+      const v = lo + ((hi - lo) * t) / 4, y = Y(v);
+      svg.append(sv("line", { x1: ml, x2: W - mr, y1: y, y2: y, stroke: "#27313d", "stroke-width": 1 }));
+      const tx = sv("text", { x: W - mr + 6, y: y + 4, fill: "#8a97a6", "font-size": 12 }); tx.textContent = fmt(v, v > 100 ? 0 : 1); svg.append(tx);
+    }
+    const line = (arr, color, w, dash) => {
+      let dstr = "", started = false;
+      arr.forEach((v, i) => { if (v == null) return; dstr += (started ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1); started = true; });
+      if (dstr) svg.append(sv("path", { d: dstr, fill: "none", stroke: color, "stroke-width": w, "stroke-linejoin": "round", ...(dash ? { "stroke-dasharray": dash } : {}) }));
+    };
+    line(b, "#8a97a6", 1.4); line(a, "#ffb020", 1.4); line(c, "#4da3ff", 2.2);
+    if (stop != null && Number(stop) > lo && Number(stop) < hi) { const y = Y(Number(stop)); svg.append(sv("line", { x1: ml, x2: W - mr, y1: y, y2: y, stroke: "#ff5a5f", "stroke-width": 1.2, "stroke-dasharray": "5 4" })); }
+    [0, Math.floor((n - 1) / 2), n - 1].forEach((i, k) => {
+      const t = sv("text", { x: X(i), y: H - 6, fill: "#8a97a6", "font-size": 12, "text-anchor": k === 0 ? "start" : k === 2 ? "end" : "middle" });
+      t.textContent = new Date(d[i]).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" }); svg.append(t);
+    });
+    const vl = sv("line", { y1: mt, y2: H - mb, stroke: "#8a97a6", "stroke-width": 1, visibility: "hidden" });
+    const dot = sv("circle", { r: 4.5, fill: "#4da3ff", visibility: "hidden" });
+    svg.append(vl, dot);
+    const show = (ev) => {
+      const r = svg.getBoundingClientRect();
+      const x = ((ev.clientX - r.left) / r.width) * W;
+      const i = Math.max(0, Math.min(n - 1, Math.round(((x - ml) / (W - ml - mr)) * (n - 1))));
+      vl.setAttribute("x1", X(i)); vl.setAttribute("x2", X(i)); vl.setAttribute("visibility", "visible");
+      dot.setAttribute("cx", X(i)); dot.setAttribute("cy", Y(c[i])); dot.setAttribute("visibility", "visible");
+      info.textContent = new Date(d[i]).toLocaleDateString("de-DE") + " · Kurs " + fmt(c[i]) + (a[i] != null ? " · 50T " + fmt(a[i]) : "") + (b[i] != null ? " · 200T " + fmt(b[i]) : "");
+    };
+    svg.addEventListener("pointermove", show); svg.addEventListener("pointerdown", show);
+    svgHost.replaceChildren(svg);
+    info.textContent = "Letzter Kurs " + fmt(c[n - 1]) + " (" + new Date(d[n - 1]).toLocaleDateString("de-DE") + "). Wische über das Diagramm für einzelne Tage.";
+    rangeBtns.replaceChildren(...[["3 Monate", 63], ["6 Monate", 126], ["12 Monate", 252], ["Alles", 1000]].map(([t, v]) =>
+      h("button", { class: "chip" + (range === v ? " on" : ""), onclick: () => { range = v; draw(); } }, t)));
+  }
+
+  const overlay = h("div", { class: "modal", onclick: (e) => e.target === overlay && close() },
+    h("div", { class: "box" },
+      h("div", { class: "row" }, h("div", {}, h("span", { class: "sym" }, name), " ", h("span", { class: "mut" }, symbol)), h("button", { class: "sec", onclick: close }, "Schließen")),
+      rangeBtns, info, svgHost,
+      h("div", { class: "leg" },
+        h("span", {}, h("i", { style: "background:#4da3ff" }), "Kurs"),
+        h("span", {}, h("i", { style: "background:#ffb020" }), "50-Tage-Linie"),
+        h("span", {}, h("i", { style: "background:#8a97a6" }), "200-Tage-Linie"),
+        stop != null ? h("span", {}, h("i", { style: "background:#ff5a5f" }), "Stop") : null)));
+  document.body.append(overlay);
+  draw();
 }
 
 const TABS = [["signale", "Signale", tabSignale], ["positionen", "Positionen", tabPositionen], ["watchlist", "Watchlist", tabWatchlist], ["verlauf", "Verlauf", tabVerlauf], ["einstellungen", "Mehr", tabEinstellungen]];
